@@ -7,34 +7,88 @@ package Data::Throttler_CHI;
 
 use strict;
 use warnings;
+use Log::ger;
 
-use List::BinarySearch::XS qw(binsearch_pos);
+use List::Util qw(sum);
 
 sub new {
-    my ($package, %args) = @_;
-    bless \%args, $package;
+    my ($class, %args) = @_;
+
+    defined $args{max_items} or die "new: Please specify max_items";
+    $args{max_items} >= 1    or die "new: max_items must be at least 1";
+    defined $args{interval}  or die "new: Please specify interval";
+    $args{interval} >= 1     or die "new: interval must be at least 1";
+    defined $args{cache}     or die "new: Please specify cache";
+
+    # calculate nof_buckets
+    my $nof_buckets;
+    if (defined $args{nof_buckets}) {
+        $args{nof_buckets} >= 1 or die "new: nof_buckets must be at least 1";
+        $nof_buckets = $args{nof_buckets};
+    } else {
+        $nof_buckets = $args{interval} ** 0.5;
+    }
+    $nof_buckets = int($nof_buckets);
+    log_trace "nof_buckets: $nof_buckets";
+
+    # XXX warn if accuracy (interval/nof_buckets) is too low (e.g. 5 min?)
+
+    my $self = {
+        t0              => time(),
+        max_items       => $args{max_items},
+        interval        => $args{interval},
+        cache           => $args{cache},
+        nof_buckets     => $nof_buckets,
+        secs_per_bucket => $args{interval} / $nof_buckets,
+    };
+    bless $self, $class;
 }
 
-my $counter = 0;
+sub _print_buckets {
+    require Data::Dmp;
+
+    my ($self, $now) = @_;
+
+    my $all_hits = $self->{cache}->get_multi_arrayref([map {"hits.$_"} 1..$self->{nof_buckets}]);
+    my $total_hits = sum(grep {defined} @$all_hits) || 0;
+
+    my $all_expires_in = [map {my $e = $self->{cache}->get_expires_at("hits.$_"); defined($e) ? $e-$now : undef} 1..$self->{nof_buckets}];
+
+    print "  hits      : ",Data::Dmp::dmp($all_hits)," total: $total_hits\n";
+    print "  expires_in: ",Data::Dmp::dmp($all_expires_in), "\n";
+}
+
 sub try_push {
     my $self = shift;
+
     my $now = time();
-    $counter++;
-    $counter = 0 if $counter == 2e31; # wraparound 32bit int
-    $self->{cache}->set(sprintf("%010d %d", $now, $counter), 1, $self->{interval}); # Y2286!
 
-    # we assume the driver returns keys in insert order, to avoid having to sort()
-    #my @keys = sort $self->{cache}->get_keys;
-    my @keys = $self->{cache}->get_keys;
+    my $secs_after_latest_interval = ($now - $self->{t0}) % $self->{interval};
+    my $bucket_num = int(
+        $secs_after_latest_interval / $self->{interval} * $self->{nof_buckets}
+    ) + 1; # 1 .. nof_buckets
 
-    return 1 if @keys <= $self->{max_items};
+    my $hits = $self->{cache}->get("hits.$bucket_num");
 
-    my $time_expired = $now - $self->{interval};
-    my $pos_not_expired = binsearch_pos { no warnings 'numeric'; $a <=> $b } $time_expired, @keys;
+    my $all_hits = $self->{cache}->get_multi_arrayref(
+        [map {"hits.$_"} 1..$self->{nof_buckets}]);
+    my $total_hits = sum(grep {defined} @$all_hits) || 0;
 
-    $self->{cache}->purge if rand() < 0.01;
+    #$self->_print_buckets($now);
+    return 0 if $total_hits >= $self->{max_items};
 
-    (@keys - $pos_not_expired) <= $self->{max_items} ? 1:0;
+    if ($hits) {
+        $self->{cache}->set(
+            "hits.$bucket_num", $hits+1,
+            {expires_at=>$self->{cache}->get_expires_at("hits.$bucket_num")});
+    } else {
+        $self->{cache}->set(
+            "hits.$bucket_num", 1,
+            {expires_at => $now + $self->{interval} - $secs_after_latest_interval + ($bucket_num-1) * $self->{secs_per_bucket}});
+    }
+
+    #$self->_print_buckets($now);
+    1;
 }
 
 1;
@@ -46,9 +100,10 @@ sub try_push {
  use CHI;
 
  my $throttler = Data::Throttler_CHI->new(
-     max_items => 100,
-     interval  => 3600,
-     cache     => CHI->new(driver=>"Memory", datastore=>{}),
+     max_items    => 100,
+     interval     => 3600,
+     cache        => CHI->new(driver=>"Memory", datastore=>{}),
+     #nof_buckets => 100, # optional, default: int(sqrt(interval))
  );
 
  if ($throttle->try_push) {
@@ -85,6 +140,11 @@ Known arguments (C<*> means required):
 =item * cache*
 
 CHI instance.
+
+=item * nof_buckets
+
+Optional. Int. Number of buckets. By default calculated using:
+int(sqrt(interval)).
 
 =back
 
