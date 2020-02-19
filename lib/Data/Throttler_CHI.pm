@@ -48,7 +48,7 @@ sub try_push {
  my $throttler = Data::Throttler_CHI->new(
      max_items => 100,
      interval  => 3600,
-     cache     => CHI->new(driver=>"Memory"),
+     cache     => CHI->new(driver=>"Memory", datastore=>{}),
  );
 
  if ($throttle->try_push) {
