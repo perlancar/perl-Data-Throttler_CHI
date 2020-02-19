@@ -8,6 +8,8 @@ package Data::Throttler_CHI;
 use strict;
 use warnings;
 
+use List::BinarySearch::XS qw(binsearch_pos);
+
 sub new {
     my ($package, %args) = @_;
     bless \%args, $package;
@@ -19,22 +21,20 @@ sub try_push {
     my $now = time();
     $counter++;
     $counter = 0 if $counter == 2e31; # wraparound 32bit int
-    $self->{cache}->set("$now|$counter", 1, $self->{interval}); # Y2286!
-    my @keys0 = $self->{cache}->get_keys;
+    $self->{cache}->set(sprintf("%010d %d", $now, $counter), 1, $self->{interval}); # Y2286!
 
-    my @keys;
-    for my $key (@keys0) {
-        my ($key_time, $key_serial) = split /\|/, $key, 2;
-        if ($key_time >= $now - $self->{interval}) {
-            push @keys, $key;
-        }
-    }
+    # we assume the driver returns keys in insert order, to avoid having to sort()
+    #my @keys = sort $self->{cache}->get_keys;
+    my @keys = $self->{cache}->get_keys;
 
-    # these drivers return expired keys: Memory. so we need to purge these keys
-    my $do_purge = rand() < 0.05; # probabilistic
-    $self->{cache}->purge if $do_purge && @keys < @keys0;
+    return 1 if @keys <= $self->{max_items};
 
-    return @keys <= $self->{max_items} ? 1:0;
+    my $time_expired = $now - $self->{interval};
+    my $pos_not_expired = binsearch_pos { no warnings 'numeric'; $a <=> $b } $time_expired, @keys;
+
+    $self->{cache}->purge if rand() < 0.01;
+
+    (@keys - $pos_not_expired) <= $self->{max_items} ? 1:0;
 }
 
 1;
