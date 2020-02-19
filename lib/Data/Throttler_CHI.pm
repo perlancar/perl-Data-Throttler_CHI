@@ -29,7 +29,7 @@ sub new {
         $nof_buckets = $args{interval} ** 0.5;
     }
     $nof_buckets = int($nof_buckets);
-    log_trace "nof_buckets: $nof_buckets";
+    #log_trace "nof_buckets: $nof_buckets";
 
     # XXX warn if accuracy (interval/nof_buckets) is too low (e.g. 5 min?)
 
