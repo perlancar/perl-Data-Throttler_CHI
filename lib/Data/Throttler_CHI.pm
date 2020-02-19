@@ -34,7 +34,7 @@ sub try_push {
     my $do_purge = rand() < 0.05; # probabilistic
     $self->{cache}->purge if $do_purge && @keys < @keys0;
 
-    return 1 if @keys <= $self->{max_items};
+    return @keys <= $self->{max_items} ? 1:0;
 }
 
 1;
