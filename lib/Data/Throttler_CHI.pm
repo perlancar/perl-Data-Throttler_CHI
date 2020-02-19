@@ -19,7 +19,7 @@ sub try_push {
     my $now = time();
     $counter++;
     $counter = 0 if $counter == 2e31; # wraparound 32bit int
-    $self->{cache}->set(sprintf("%010d|%d", $now, $counter), 1, $self->{interval}); # Y2286!
+    $self->{cache}->set("$now|$counter", 1, $self->{interval}); # Y2286!
     my @keys0 = $self->{cache}->get_keys;
 
     my @keys;
